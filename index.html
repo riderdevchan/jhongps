@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tag GPS Pro 🏍️</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body { margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; background: #0f172a; overflow: hidden; height: 100vh; }
+        #map-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; overflow: hidden; background: #e5e5e5; }
+        #map { width: 100%; height: 100%; transform: scale(1.5); transition: transform 0.4s cubic-bezier(0.25, 0.8, 0.25, 1); }
+        
+        .speedometer-hud {
+            position: absolute; top: 20px; left: 20px; z-index: 1000;
+            background: rgba(224, 242, 254, 0.9); padding: 10px 18px; border-radius: 18px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.12); border: 2px solid #67e8f9;
+            backdrop-filter: blur(8px); text-align: center; min-width: 90px;
+        }
+        .speed-badge { color: #059669; font-size: 38px; font-weight: 900; font-family: monospace; text-shadow: 0 0 8px rgba(5, 150, 105, 0.3); line-height: 1; }
+        .speed-unit { font-size: 11px; color: #64748b; display: block; margin-top: 4px; font-weight: bold; text-shadow: none; }
+
+        .custom-zoom-controls { position: absolute; top: 20px; right: 20px; z-index: 1000; display: flex; flex-direction: column; gap: 6px; }
+        .zoom-btn {
+            width: 44px; height: 44px; background: white; border: none; border-radius: 12px; font-size: 20px; font-weight: bold; color: #1e293b;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.2s, transform 0.1s;
+        }
+        .zoom-btn:active { background: #f1f5f9; transform: scale(0.95); }
+
+        .bottom-hud-container { position: absolute; bottom: 30px; left: 0; right: 0; z-index: 1000; display: flex; justify-content: center; width: 100%; pointer-events: none; }
+        .unified-dashboard {
+            background: rgba(255, 255, 255, 0.94); padding: 18px; border-radius: 24px; box-shadow: 0 12px 30px rgba(15, 23, 42, 0.15); width: 85%; max-width: 340px;
+            backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.7); display: flex; flex-direction: column; gap: 10px; text-align: center; box-sizing: border-box; pointer-events: auto;
+        }
+        .hud-status-text { font-weight: 700; font-size: 15px; color: #334155; margin: 0; letter-spacing: 0.5px; }
+        .hud-distance-text { font-weight: bold; font-size: 13px; color: #0284c7; background: #e0f2fe; padding: 4px 12px; border-radius: 50px; display: inline-block; margin: 0 auto; }
+
+        .navigate-btn {
+            background: linear-gradient(135deg, #60a5fa, #3b82f6); color: white; border: none; padding: 12px 20px; font-size: 16px; font-weight: bold; border-radius: 14px;
+            cursor: pointer; width: 100%; box-sizing: border-box; box-shadow: 0 4px 14px rgba(96, 165, 250, 0.4); display: flex; align-items: center; justify-content: center; gap: 8px; text-decoration: none; transition: background 0.2s, transform 0.1s;
+        }
+        .navigate-btn:active { transform: scale(0.98); }
+
+        .navigation-arrow-wrapper { width: 50px; height: 50px; display: flex; align-items: center; justify-content: center; }
+        .navigation-arrow-svg { width: 42px; height: 42px; filter: drop-shadow(0px 4px 6px rgba(0,0,0,0.3)); fill: #3b82f6; }
+    </style>
+</head>
+<body>
+
+    <div id="map-container"><div id="map"></div></div>
+    
+    <div class="speedometer-hud">
+        <div class="speed-badge" id="speed-display">0</div>
+        <span class="speed-unit">กม./ชม.</span>
+    </div>
+
+    <div class="custom-zoom-controls">
+        <button class="zoom-btn" onclick="window.map.zoomIn()">＋</button>
+        <button class="zoom-btn" onclick="window.map.zoomOut()">－</button>
+        <button class="zoom-btn" onclick="window.reCenterMapToRider()">🎯</button>
+    </div>
+    
+    <div class="bottom-hud-container">
+        <div class="unified-dashboard">
+            <div class="hud-status-text" id="rider-status">กำลังค้นหาสัญญาณพี่ยาง...</div>
+            <div class="hud-distance-text" id="distance-display">วันนี้วิ่งแล้ว: 0.00 กม.</div>
+            <a href="#" target="_blank" class="navigate-btn" id="btn-navigate">🧭 ตามไปหาพี่ยาง</a>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getFirestore, doc, collection, addDoc, serverTimestamp, onSnapshot, getDocs } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyDy-R01JXQm-tf1jQLKwz6u1PuKDCF3zwk",
+            authDomain: "find-80ef2.firebaseapp.com",
+            projectId: "find-80ef2",
+            storageBucket: "find-80ef2.firebasestorage.app",
+            messagingSenderId: "109312481378",
+            appId: "1:109312481378:android:2d95511e75ff32c39dd93b"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const riderUUID = "BP2A.250605.031.A3"; 
+        const homeLatitude = 12.647361;  
+        const homeLongitude = 102.094667; 
+
+        let lastNotifyTime = 0;
+        async function notifyRiderOnView() {
+            const nowMs = Date.now();
+            if (nowMs - lastNotifyTime < 8000) return;
+            lastNotifyTime = nowMs;
+
+            try {
+                const now = new Date();
+                const displayTime = now.toLocaleTimeString('th-TH', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                }) + ' น.';
+
+                await addDoc(collection(db, "stats"), {
+                    ping_id: String(nowMs),
+                    device_id: riderUUID,
+                    display_time: displayTime,
+                    viewer: "แฟนส่องผ่านเว็บ jhongps",
+                    checked_at: serverTimestamp()
+                });
+            } catch (err) {
+                console.error("Spy notify error:", err);
+            }
+        }
+
+        notifyRiderOnView();
+        document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "visible") {
+                notifyRiderOnView();
+            }
+        });
+
+        window.map = L.map('map', { zoomControl: false, attributionControl: false }).setView([homeLatitude, homeLongitude], 17);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(window.map);
+        L.circle([homeLatitude, homeLongitude], { color: '#10b981', fillColor: '#10b981', fillOpacity: 0.12, radius: 20 }).addTo(window.map);
+
+        let riderMarker;
+        let lastRiderPos = [homeLatitude, homeLongitude];
+        let unsubscribeLive = null;
+        let targetSpeed = 0; let displaySpeed = 0;
+        let targetDistance = 0; let displayDistance = 0;
+
+        window.reCenterMapToRider = function() {
+            if (window.map && lastRiderPos) { window.map.setView(lastRiderPos, window.map.getZoom(), { animate: true }); }
+        };
+
+        function updateDashboardEngine() {
+            const sDiff = targetSpeed - displaySpeed;
+            if (Math.abs(sDiff) > 0.1) { displaySpeed += sDiff * 0.08; } else { displaySpeed = targetSpeed; }
+            document.getElementById("speed-display").innerText = Math.round(displaySpeed);
+            document.getElementById("speed-display").style.color = Math.round(displaySpeed) === 0 ? "#94a3b8" : "#059669";
+            
+            const dDiff = targetDistance - displayDistance;
+            if (Math.abs(dDiff) > 0.005) { displayDistance += dDiff * 0.05; } else { displayDistance = targetDistance; }
+            document.getElementById("distance-display").innerText = `วันนี้วิ่งแล้ว: ${displayDistance.toFixed(2)} กม.`;
+
+            requestAnimationFrame(updateDashboardEngine);
+        }
+        requestAnimationFrame(updateDashboardEngine);
+
+        if (unsubscribeLive) unsubscribeLive();
+        unsubscribeLive = onSnapshot(doc(db, "locations", riderUUID), async (docSnap) => {
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                const pos = [data.latitude, data.longitude];
+                lastRiderPos = pos; 
+
+                if (data.speed) {
+                    const parsed = parseFloat(data.speed.replace(/[^0-9.]/g, ''));
+                    targetSpeed = isNaN(parsed) ? 0 : parsed;
+                } else { targetSpeed = 0; }
+
+                if (data.daily_distance) {
+                    const parsedDist = parseFloat(data.daily_distance.replace(/[^0-9.]/g, ''));
+                    targetDistance = isNaN(parsedDist) ? 0.0 : parsedDist;
+                } else { targetDistance = 0.0; }
+
+                if (data.latitude && data.longitude) {
+                    document.getElementById("btn-navigate").href = `https://www.google.com/maps/search/?api=1&query=${data.latitude},${data.longitude}`;
+                }
+
+                const R = 6371000;
+                const dLat = (data.latitude - homeLatitude) * Math.PI / 180;
+                const dLon = (data.longitude - homeLongitude) * Math.PI / 180;
+                const a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(homeLatitude * Math.PI / 180) * Math.cos(data.latitude * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+                const distanceFromHome = R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+                const statusEl = document.getElementById("rider-status");
+
+                if (distanceFromHome <= 80) {
+                    statusEl.innerText = "กำลังพักผ่อน 🏡"; statusEl.style.color = "#059669";
+                } else {
+                    let foundCustomPlace = false;
+                    try {
+                        const customPlacesSnap = await getDocs(collection(db, "custom_places"));
+                        for (const placeDoc of customPlacesSnap.docs) {
+                            const pData = placeDoc.data();
+                            const pLat = parseFloat(pData.latitude); const pLon = parseFloat(pData.longitude);
+                            const dLat2 = (data.latitude - pLat) * Math.PI / 180; const dLon2 = (data.longitude - pLon) * Math.PI / 180;
+                            const a2 = Math.sin(dLat2/2) * Math.sin(dLat2/2) + Math.cos(pLat * Math.PI / 180) * Math.cos(data.latitude * Math.PI / 180) * Math.sin(dLon2/2) * Math.sin(dLon2/2);
+                            if ((R * (2 * Math.atan2(Math.sqrt(a2), Math.sqrt(1-a2)))) <= 10.0) {
+                                statusEl.innerText = `อยู่ที่: ${pData.place_name || ""} 📍`; statusEl.style.color = "#059669"; foundCustomPlace = true; break;
+                            }
+                        }
+                    } catch (err) {}
+                    if (!foundCustomPlace) { statusEl.innerText = data.status || "กำลังขับขี่มอเตอร์ไซค์ 🏍️💨"; statusEl.style.color = "#2563eb"; }
+                }
+
+                const currentHeading = (data.heading !== undefined && data.heading !== null) ? parseFloat(data.heading) : 0;
+                document.getElementById('map').style.transform = `scale(1.5) rotate(${-currentHeading}deg)`;
+
+                const customArrowSVG = `<div class="navigation-arrow-wrapper"><svg class="navigation-arrow-svg" viewBox="0 0 24 24" style="transform: rotate(${currentHeading}deg);"><path d="M12,2L4.5,20.29L5.21,21L12,18L18.79,21L19.5,20.29L12,2Z"/></svg></div>`;
+                const navigationArrowIcon = L.divIcon({ html: customArrowSVG, className: '', iconSize: [50, 50], iconAnchor: [25, 25] });
+                if (!riderMarker) { riderMarker = L.marker(pos, { icon: navigationArrowIcon }).addTo(window.map); } else { riderMarker.setLatLng(pos); riderMarker.setIcon(navigationArrowIcon); }
+                window.map.setView(pos, window.map.getZoom(), { animate: true });
+            }
+        });
+    </script>
+</body>
+</html>
